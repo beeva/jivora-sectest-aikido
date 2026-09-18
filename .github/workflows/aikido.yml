@@ -1,0 +1,64 @@
+name: aikido
+
+# Aikido's primary integration is the GitHub App, which scans the repository
+# server-side with no workflow at all -- install it and the first scan starts
+# immediately. This workflow is the *CI gate* on top of that: it fails a pull
+# request when the app has open issues above the configured threshold.
+#
+# Evaluate both paths. The App is what you would actually run; the gate is what
+# tells you whether the product can block a merge.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  gate:
+    name: Aikido CI gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Confirm the current ref against the Aikido marketplace listing before
+      # relying on this in anger; pin it to a SHA once chosen.
+      - name: Aikido security gate
+        uses: AikidoSec/github-actions@v1
+        continue-on-error: true
+        with:
+          secret-key: ${{ secrets.AIKIDO_SECRET_KEY }}
+          fail-on-dependency-scan: true
+          fail-on-sast-scan: true
+          fail-on-iac-scan: true
+          fail-on-secrets-scan: true
+          minimum-severity: LOW
+          post-scan-status-comment: true
+
+  # Local SBOM, so the dependency set Aikido reports can be diffed against
+  # ground truth without trusting either side.
+  sbom:
+    name: SBOM baseline
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: [Jivora-backend, jivora-web, jivora-admin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Generate CycloneDX SBOM
+        working-directory: ${{ matrix.project }}
+        continue-on-error: true
+        run: |
+          npm install --package-lock-only --no-audit --no-fund
+          npx --yes @cyclonedx/cyclonedx-npm --output-file sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.project }}
+          path: ${{ matrix.project }}/sbom.json
+          if-no-files-found: warn
